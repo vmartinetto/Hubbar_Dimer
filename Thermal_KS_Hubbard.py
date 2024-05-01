@@ -138,7 +138,7 @@ def find_dvks(t,taus,delta_ns):
     dvks = np.empty(len(delta_ns))
     for i,tau in enumerate(taus):
         func = del_n_root(t,tau,delta_ns[i])
-        dvks[i] = optimize.bisect(func,-40,40)
+        dvks[i] = optimize.bisect(func,-100,100)
     return dvks
 
 ############################ KS Energies ##################################

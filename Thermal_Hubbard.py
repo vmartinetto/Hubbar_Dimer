@@ -3,6 +3,10 @@ from numpy.linalg import eigh
 import scipy as sp
 import scipy.optimize as optimize
 from decimal import Decimal
+import scipy.interpolate as interpolate
+import Thermal_KS_Hubbard as KS_Therm
+from scipy.integrate import simps
+from tqdm import tqdm
 
 ####################### Hubbard Hamiltonians#####################################
 
@@ -537,6 +541,68 @@ def Expectation(U,t,v1,v2,mu,taus,operator='delta_n'):
         Zg = np.sum(np.exp(ZG_list/tau))
         expts[i] = np.sum(exp_list*np.exp(ZG_list/tau))/Zg
     return expts
+
+def Weird_T(U,scale,t,v1,v2,mu,taus,operator='delta_n'):
+    '''
+    A function for calculating the expectation value of the thermal hubbard model at
+    temp tau for a set of given parameters.
+    
+    INPUT:
+        U: scalar
+            The charging energy, the on-site interaction term.
+        t: scalar
+            The hopping term, the kinetic energy.
+        v1: scalar
+            The onsite potential at site 1.
+        v2: scalar
+            The onsite potential at site 2.
+        mu: scalar
+            The chemical potential of the system.
+        taus: np.array
+            A list of tau values to calculate the partition function of the system at.
+    OUTPUT:
+        delta_ns:
+    '''
+    
+    scalet = scale**2*t
+    
+    # Initialize which operator to calculate the expectation value of
+    op1 = hub1_kin_op(t)
+    op2 = hub2_kin_op(t)
+    op3 = hub3_kin_op(t)
+    op4 = 0
+        
+    # solve for the eigenvectors and values at the specified U, t ,v1, v2 vals
+    onevals,onevecs = eigh(hub_2site_1part(U,scalet,v1,v2))
+    twovals,twovecs = eigh(hub_2site_2part(U,scalet,v1,v2))
+    threevals,threevecs = eigh(hub_2site_3part(U,scalet,v1,v2))
+    fourvecs,fourvals = np.array([1]),2*U
+    
+    # calculate the part not dependent on tau so tau can be looped over and
+    # eigenvalues don't have to be re calculated
+    ZG_list = np.array([0])
+    ZG_list = np.append(ZG_list,mu*1 - onevals)
+    ZG_list = np.append(ZG_list,mu*2 - twovals)
+    ZG_list = np.append(ZG_list,mu*3 - threevals)
+    ZG_list = np.append(ZG_list,mu*4 - fourvals)
+    ZG_list = np.array([Decimal(val) for val in ZG_list])
+    
+    # solve for the list of all expectation values in a manner similar to ZG_list
+    exp_list = np.array([0])
+    exp_list = np.append(exp_list,np.diagonal(np.dot(onevecs.T,np.dot(op1,onevecs))))
+    exp_list = np.append(exp_list,np.diagonal(np.dot(twovecs.T,np.dot(op2,twovecs))))
+    exp_list = np.append(exp_list,np.diagonal(np.dot(threevecs.T,np.dot(op3,threevecs))))
+    exp_list = np.append(exp_list,op4)
+    exp_list = np.array([Decimal(val) for val in exp_list])
+    
+    # intialize the expectation storage and calculate
+    # the averaged expectation value
+    expts = np.empty(len(taus))
+    for i,tau in enumerate(taus):
+        tau = Decimal(tau/scale**2)
+        Zg = np.sum(np.exp(ZG_list/tau))
+        expts[i] = np.sum(exp_list*np.exp(ZG_list/tau))/Zg
+    return expts
     
 ######################################### 2 particle functions #################################
 
@@ -810,3 +876,339 @@ def Thermal_hub_Uc(t,lam,U,tau,target_dn,EHX,dv_guess):
     Vee = Thermal_2particle_Hubbard_interaction(lam*U,t,dv,[tau])
         
     return ((Vee-lam*EHX)/lam),dv
+
+################################ Testing ##############################
+
+def Thermal_hub_muT(t,mu,U,tau,target_dn,dv_guess):
+    '''
+    Takes multiple values and comutes Uc at a target delta n for those values.
+    
+    INPUT
+        t: scalar
+            The hopping parameter.
+        lam: scalar
+            the interaction strength scaling paramter.
+        U: scalar
+            The interaction strength of the full system.
+        target_dn: scalar
+            the on-site occupation differnece that is to remain fixed.
+        E_HX: scalar
+            The Hartree Exchange energy of the non-interacting system at the 
+            targert delta n.
+    
+    OUTPUT
+        Uc: scalar
+            The potnetial correlation energy at given values above.
+            
+    '''
+    func = Thermal_dn_search_func_gen(U,mu**2*t,tau/mu**2,target_dn)
+    #dv_guess = 10*lam*U*target_dn
+    #if lam < 1:
+    #    dv = optimize.bisect(func,-100,100,xtol=2e-12)
+    #else:
+    #    dv = optimize.bisect(func,-100*np.sqrt(lam/10),100*np.sqrt(lam/10),xtol=2e-12)
+    dv = optimize.newton(func,dv_guess,maxiter=100)
+        
+    T = Thermal_2particle_Hubbard_kinetic(U,mu**2*t,dv,[tau/mu**2])
+        
+    return T/mu**2,dv
+
+def Weird_kinetic(U,scale,t,dv,taus):
+    '''
+    A function for calculating the kinetic energy for the 
+    2 particle 2 site thermal hubbard model.
+    
+    INPUT:
+        U: scalar
+            The charging energy, the on-site interaction term.
+        t: scalar
+            The hopping term, the kinetic energy.
+        dv: scalar
+            The difference in the on-site potnetials.
+        taus: np.array
+            A list of tau values to calculate the partition function of the system at.
+    OUTPUT:
+        expts: np.array
+            The kinetic values for a given dv,U, and T across a range of tau
+    '''
+    mu = U/2
+    expts = Weird_T(U,scale,t,dv/2,-dv/2,mu,taus,operator='kinetic')
+    return expts
+
+def Weird_muT(t,mu,U,tau,target_dn,dv_guess):
+    '''
+    Takes multiple values and computes Uc at a target delta n for those values.
+    
+    INPUT
+        t: scalar
+            The hopping parameter.
+        lam: scalar
+            the interaction strength scaling paramter.
+        U: scalar
+            The interaction strength of the full system.
+        target_dn: scalar
+            the on-site occupation differnece that is to remain fixed.
+        E_HX: scalar
+            The Hartree Exchange energy of the non-interacting system at the 
+            targert delta n.
+    
+    OUTPUT
+        Uc: scalar
+            The potnetial correlation energy at given values above.
+            
+    '''
+    func = Thermal_dn_search_func_gen(U,mu**2*t,tau/mu**2,target_dn)
+    #dv_guess = 10*lam*U*target_dn
+    #if lam < 1:
+    #    dv = optimize.bisect(func,-100,100,xtol=2e-12)
+    #else:
+    #    dv = optimize.bisect(func,-100*np.sqrt(lam/10),100*np.sqrt(lam/10),xtol=2e-12)
+    dv = optimize.newton(func,dv_guess,maxiter=100)
+        
+    T = Weird_kinetic(U,mu,t,dv,[tau])
+        
+    return T,dv
+
+def Weird_T(U,scale,t,v1,v2,mu,taus,operator='delta_n'):
+    '''
+    A function for calculating the expectation value of the thermal hubbard model at
+    temp tau for a set of given parameters.
+    
+    INPUT:
+        U: scalar
+            The charging energy, the on-site interaction term.
+        t: scalar
+            The hopping term, the kinetic energy.
+        v1: scalar
+            The onsite potential at site 1.
+        v2: scalar
+            The onsite potential at site 2.
+        mu: scalar
+            The chemical potential of the system.
+        taus: np.array
+            A list of tau values to calculate the partition function of the system at.
+    OUTPUT:
+        delta_ns:
+    '''
+    
+    scalet = scale**2*t
+    
+    # Initialize which operator to calculate the expectation value of
+    op1 = hub1_kin_op(t)
+    op2 = hub2_kin_op(t)
+    op3 = hub3_kin_op(t)
+    op4 = 0
+        
+    # solve for the eigenvectors and values at the specified U, t ,v1, v2 vals
+    onevals,onevecs = eigh(hub_2site_1part(U,scalet,v1,v2))
+    twovals,twovecs = eigh(hub_2site_2part(U,scalet,v1,v2))
+    threevals,threevecs = eigh(hub_2site_3part(U,scalet,v1,v2))
+    fourvecs,fourvals = np.array([1]),2*U
+    
+    # calculate the part not dependent on tau so tau can be looped over and
+    # eigenvalues don't have to be re calculated
+    ZG_list = np.array([0])
+    ZG_list = np.append(ZG_list,mu*1 - onevals)
+    ZG_list = np.append(ZG_list,mu*2 - twovals)
+    ZG_list = np.append(ZG_list,mu*3 - threevals)
+    ZG_list = np.append(ZG_list,mu*4 - fourvals)
+    ZG_list = np.array([Decimal(val) for val in ZG_list])
+    
+    # solve for the list of all expectation values in a manner similar to ZG_list
+    exp_list = np.array([0])
+    exp_list = np.append(exp_list,np.diagonal(np.dot(onevecs.T,np.dot(op1,onevecs))))
+    exp_list = np.append(exp_list,np.diagonal(np.dot(twovecs.T,np.dot(op2,twovecs))))
+    exp_list = np.append(exp_list,np.diagonal(np.dot(threevecs.T,np.dot(op3,threevecs))))
+    exp_list = np.append(exp_list,op4)
+    exp_list = np.array([Decimal(val) for val in exp_list])
+    
+    # intialize the expectation storage and calculate
+    # the averaged expectation value
+    expts = np.empty(len(taus))
+    for i,tau in enumerate(taus):
+        #tau = Decimal(tau/scale**2)
+        tau = Decimal(tau)
+        Zg = np.sum(np.exp(ZG_list/tau))
+        expts[i] = np.sum(exp_list*np.exp(ZG_list/tau))/Zg
+    return expts
+
+def Weird_T_no_temp(U,scale,t,v1,v2,mu,taus,operator='delta_n'):
+    '''
+    A function for calculating the expectation value of the thermal hubbard model at
+    temp tau for a set of given parameters.
+    
+    INPUT:
+        U: scalar
+            The charging energy, the on-site interaction term.
+        t: scalar
+            The hopping term, the kinetic energy.
+        v1: scalar
+            The onsite potential at site 1.
+        v2: scalar
+            The onsite potential at site 2.
+        mu: scalar
+            The chemical potential of the system.
+        taus: np.array
+            A list of tau values to calculate the partition function of the system at.
+    OUTPUT:
+        delta_ns:
+    '''
+    
+    scalet = scale**2*t
+    
+    # Initialize which operator to calculate the expectation value of
+    op1 = hub1_kin_op(t)
+    op2 = hub2_kin_op(t)
+    op3 = hub3_kin_op(t)
+    op4 = 0
+        
+    # solve for the eigenvectors and values at the specified U, t ,v1, v2 vals
+    onevals,onevecs = eigh(hub_2site_1part(U,scalet,v1,v2))
+    twovals,twovecs = eigh(hub_2site_2part(U,scalet,v1,v2))
+    threevals,threevecs = eigh(hub_2site_3part(U,scalet,v1,v2))
+    fourvecs,fourvals = np.array([1]),2*U
+    
+    # calculate the part not dependent on tau so tau can be looped over and
+    # eigenvalues don't have to be re calculated
+    ZG_list = np.array([0])
+    ZG_list = np.append(ZG_list,mu*1 - onevals)
+    ZG_list = np.append(ZG_list,mu*2 - twovals)
+    ZG_list = np.append(ZG_list,mu*3 - threevals)
+    ZG_list = np.append(ZG_list,mu*4 - fourvals)
+    ZG_list = np.array([Decimal(val) for val in ZG_list])
+    
+    # solve for the list of all expectation values in a manner similar to ZG_list
+    exp_list = np.array([0])
+    exp_list = np.append(exp_list,np.diagonal(np.dot(onevecs.T,np.dot(op1,onevecs))))
+    exp_list = np.append(exp_list,np.diagonal(np.dot(twovecs.T,np.dot(op2,twovecs))))
+    exp_list = np.append(exp_list,np.diagonal(np.dot(threevecs.T,np.dot(op3,threevecs))))
+    exp_list = np.append(exp_list,op4)
+    exp_list = np.array([Decimal(val) for val in exp_list])
+    
+    # intialize the expectation storage and calculate
+    # the averaged expectation value
+    expts = np.empty(len(taus))
+    for i,tau in enumerate(taus):
+        tau = Decimal(tau)
+        Zg = np.sum(np.exp(ZG_list/tau))
+        expts[i] = np.sum(exp_list*np.exp(ZG_list/tau))/Zg
+    return expts
+
+def Weird_kinetic_no_temp(U,scale,t,dv,taus):
+    '''
+    A function for calculating the kinetic energy for the 
+    2 particle 2 site thermal hubbard model.
+    
+    INPUT:
+        U: scalar
+            The charging energy, the on-site interaction term.
+        t: scalar
+            The hopping term, the kinetic energy.
+        dv: scalar
+            The difference in the on-site potnetials.
+        taus: np.array
+            A list of tau values to calculate the partition function of the system at.
+    OUTPUT:
+        expts: np.array
+            The kinetic values for a given dv,U, and T across a range of tau
+    '''
+    mu = U/2
+    expts = Weird_T_no_temp(U,scale,t,dv/2,-dv/2,mu,taus,operator='kinetic')
+    return expts
+
+def Weird_muT_no_temp(t,mu,U,tau,target_dn,dv_guess):
+    '''
+    Takes multiple values and comutes Uc at a target delta n for those values.
+    
+    INPUT
+        t: scalar
+            The hopping parameter.
+        lam: scalar
+            the interaction strength scaling paramter.
+        U: scalar
+            The interaction strength of the full system.
+        target_dn: scalar
+            the on-site occupation differnece that is to remain fixed.
+        E_HX: scalar
+            The Hartree Exchange energy of the non-interacting system at the 
+            targert delta n.
+    
+    OUTPUT
+        Uc: scalar
+            The potnetial correlation energy at given values above.
+            
+    '''
+    func = Thermal_dn_search_func_gen(U,mu**2*t,tau,target_dn)
+    #dv_guess = 10*lam*U*target_dn
+    #if lam < 1:
+    #    dv = optimize.bisect(func,-100,100,xtol=2e-12)
+    #else:
+    #    dv = optimize.bisect(func,-100*np.sqrt(lam/10),100*np.sqrt(lam/10),xtol=2e-12)
+    dv = optimize.newton(func,dv_guess,maxiter=100)
+        
+    T = Weird_kinetic_no_temp(U,mu,t,dv,[tau])
+        
+    return T,dv
+
+##########################Thermal upside down###########################
+
+def Kcs(t,U,tau,target_dn,lambdas,error_check=False):
+    
+    errored = False
+    
+    EHX = (U/2)*(1+(target_dn/2)**2)
+    dlam = lambdas[1]-lambdas[0]
+
+    dv_guess = -float(KS_Therm.find_dvks(t,[tau],[target_dn]))
+
+    Wintlams = np.empty(len(lambdas))
+    Kcs = []
+    mus = np.empty(len(lambdas))
+    dv_list = np.empty_like(mus)
+    plotmus = []
+    all_Kcs = []
+    
+    EDC_at_mu = []
+
+    for i,lam in enumerate(tqdm(lambdas)):
+        mus[i] = np.sqrt(1/lam)
+#        if i%100==0:
+#            print(i)
+        try:
+            Wintlams[i],dv_guess = Thermal_hub_Uc(t,lam,U,tau,target_dn,EHX,dv_guess)
+            dv_list[i] = dv_guess
+        except:
+            print('error in resolution of lambdas at mu:')
+            print(mus[i])
+            errored = True
+            break
+            
+        if i > 1:
+            all_Kcs.append((2*mus[i]*simps(Wintlams[:i]-Wintlams[i],lambdas[:i])))
+            
+        if mus[i] <= 1:
+            Kcs.append(all_Kcs[-1])
+            plotmus.append(mus[i])
+            
+            EDC_at_mu.append(simps(np.flip(Kcs),np.flip(plotmus)))
+
+    f = interpolate.interp1d(plotmus[-3:], Kcs[-3:], fill_value='extrapolate')
+
+    ex_mus = np.linspace(0,plotmus[-1],101)
+    ex_Kcs = f(ex_mus)
+    
+    Kcs = np.flip(Kcs)
+    plotmus = np.flip(plotmus)
+    
+    all_Kcs = np.flip(all_Kcs)
+    all_mus = np.flip(mus[:-2])
+    
+    dvs = np.flip(dv_list[:-2])
+    
+    EDC_at_mu = np.flip(EDC_at_mu)
+    
+    if error_check == False:
+        return Kcs,plotmus,ex_Kcs,ex_mus,all_Kcs,all_mus,EDC_at_mu,dvs
+    
+    if error_check == True:
+        return Kcs,plotmus,ex_Kcs,ex_mus,all_Kcs,all_mus,EDC_at_mu,dvs,errored
